@@ -30,7 +30,6 @@ const client = new Client({
 
 // ========== CONFIG ==========
 const GUILD_ID = '1450458983402967134';
-
 const CONFIG = {
   WELCOME_CHANNEL_ID: process.env.WELCOME_CHANNEL_ID || '1450458984606863535',
   AUTO_ROLE_ID: process.env.AUTO_ROLE_ID || '1471461739026579588',
@@ -49,6 +48,7 @@ const CONFIG = {
   MIN_ACCOUNT_AGE_DAYS: parseInt(process.env.MIN_ACCOUNT_AGE_DAYS || '7'),
   ANTI_LINK: process.env.ANTI_LINK === 'true',
   ANTI_SPAM: process.env.ANTI_SPAM !== 'true',
+
 };
 
 const REACTION_ROLES = {
@@ -515,7 +515,7 @@ client.on(Events.MessageCreate, async message => {
     );
 
     const reviewMsg = await reviewChannel.send({ embeds: [embed], components: [row] });
-    pendingRequests[message.author.id] = reviewMsg.id;
+    pendingRequests[message.author.id] = { msgId: reviewMsg.id, content: message.content };
 
     const notify = await message.channel.send(`📬 ${message.author} Your request has been submitted! An admin will review it shortly.`);
     setTimeout(() => notify.delete().catch(() => {}), 8000);
@@ -611,6 +611,24 @@ client.on(Events.InteractionCreate, async interaction => {
         .setColor(isAccept ? 0x57f287 : 0xed4245)
         .addFields({ name: isAccept ? '✅ Accepted by' : '❌ Rejected by', value: `${interaction.user.tag}`, inline: true });
       await interaction.message.edit({ embeds: [updatedEmbed] }).catch(() => {});
+
+      // If accepted, send the request content to the services channel
+      if (isAccept && CONFIG.SERVICES_CHANNEL_ID) {
+        const servicesChannel = interaction.guild.channels.cache.get(CONFIG.SERVICES_CHANNEL_ID);
+        if (servicesChannel) {
+          const requestContent = pendingRequests[targetUserId]?.content || '*(content unavailable)*';
+          const announceEmbed = new EmbedBuilder()
+            .setColor(0x57f287)
+            .setTitle('✅ Service Request Accepted')
+            .setDescription(requestContent)
+            .addFields(
+              { name: '👤 Requested by', value: `<@${targetUserId}>`, inline: true },
+              { name: '✅ Accepted by', value: `${interaction.user.tag}`, inline: true }
+            )
+            .setTimestamp();
+          await servicesChannel.send({ embeds: [announceEmbed] }).catch(() => {});
+        }
+      }
 
       // Clear pending request
       delete pendingRequests[targetUserId];
