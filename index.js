@@ -31,6 +31,7 @@ const client = new Client({
 
 // ========== CONFIG ==========
 const GUILD_ID = '1450458983402967134';
+
 const CONFIG = {
   WELCOME_CHANNEL_ID: process.env.WELCOME_CHANNEL_ID || '1450458984606863535',
   AUTO_ROLE_ID: process.env.AUTO_ROLE_ID || '1471461739026579588',
@@ -41,8 +42,8 @@ const CONFIG = {
   GROQ_API_KEY: process.env.GROQ_API_KEY || '',
   MOD_LOG_CHANNEL_ID: process.env.MOD_LOG_CHANNEL_ID || '1481343733399289868',
   STATS_CHANNEL_ID: process.env.STATS_CHANNEL_ID || '1481344079437631679',
-  MEMBERS_VC_ID: process.env.MEMBERS_VC_ID || '1481399945629139126',             // voice channel showing member count
-  BOOSTS_VC_ID: process.env.BOOSTS_VC_ID || '1481399867145326623',               // voice channel showing boost count
+  MEMBERS_VC_ID: process.env.MEMBERS_VC_ID || '1481399945629139126',
+  BOOSTS_VC_ID: process.env.BOOSTS_VC_ID || '1481399867145326623',
   MINIGAMES_CHANNEL_ID: process.env.MINIGAMES_CHANNEL_ID || '1481339938887700660',
   SERVICES_CHANNEL_ID: process.env.SERVICES_CHANNEL_ID || '1481292497886904451',
   SERVICES_REVIEW_CHANNEL_ID: process.env.SERVICES_REVIEW_CHANNEL_ID || '1481399502949843024',
@@ -264,6 +265,46 @@ async function buildAutoRolesPanel(guild) {
   return { embeds: [embed], components: rows };
 }
 
+
+// ========== PROGRAMMING LANGUAGE ROLES ==========
+// Replace the empty roleId strings with your actual Discord role IDs
+const LANGUAGE_ROLES = [
+  // Web Frontend
+  { id: 'html',        label: 'HTML',           emoji: '🌐', roleId: '', description: 'HyperText Markup Language — the structure of the web', category: 'Web' },
+  { id: 'css',         label: 'CSS',             emoji: '🎨', roleId: '', description: 'Cascading Style Sheets — styling & layout of web pages', category: 'Web' },
+  { id: 'javascript',  label: 'JavaScript',      emoji: '🟨', roleId: '', description: 'The language of the web — frontend & backend (Node.js)', category: 'Web' },
+  { id: 'typescript',  label: 'TypeScript',      emoji: '🔷', roleId: '', description: 'Typed superset of JavaScript for large-scale apps', category: 'Web' },
+  { id: 'react',       label: 'React',           emoji: '⚛️',  roleId: '', description: 'JavaScript library for building user interfaces', category: 'Web' },
+  { id: 'vue',         label: 'Vue.js',          emoji: '💚', roleId: '', description: 'Progressive JavaScript framework for web UIs', category: 'Web' },
+  { id: 'svelte',      label: 'Svelte',          emoji: '🔥', roleId: '', description: 'Compiler-based JavaScript framework with no virtual DOM', category: 'Web' },
+  // Backend / General
+  { id: 'python',      label: 'Python',          emoji: '🐍', roleId: '', description: 'High-level language great for AI, data science & scripting', category: 'Backend' },
+  { id: 'nodejs',      label: 'Node.js',         emoji: '🟩', roleId: '', description: 'JavaScript runtime for server-side applications', category: 'Backend' },
+  { id: 'java',        label: 'Java',            emoji: '☕', roleId: '', description: 'Object-oriented language used in enterprise & Android apps', category: 'Backend' },
+  { id: 'kotlin',      label: 'Kotlin',          emoji: '🟣', roleId: '', description: 'Modern JVM language — official language for Android dev', category: 'Backend' },
+  { id: 'csharp',      label: 'C#',              emoji: '🔵', roleId: '', description: 'Microsoft language used for .NET, games (Unity) & apps', category: 'Backend' },
+  { id: 'cpp',         label: 'C++',             emoji: '⚙️',  roleId: '', description: 'Powerful low-level language for system & game development', category: 'Backend' },
+  { id: 'c',           label: 'C',               emoji: '🔩', roleId: '', description: 'Foundational language for operating systems & embedded', category: 'Backend' },
+  { id: 'go',          label: 'Go',              emoji: '🐹', roleId: '', description: 'Google language built for fast, concurrent backend services', category: 'Backend' },
+  { id: 'rust',        label: 'Rust',            emoji: '🦀', roleId: '', description: 'Memory-safe systems language focused on speed & safety', category: 'Backend' },
+  { id: 'ruby',        label: 'Ruby',            emoji: '💎', roleId: '', description: 'Elegant scripting language — famous for Ruby on Rails', category: 'Backend' },
+  { id: 'php',         label: 'PHP',             emoji: '🐘', roleId: '', description: 'Server-side scripting language powering much of the web', category: 'Backend' },
+  { id: 'swift',       label: 'Swift',           emoji: '🍎', roleId: '', description: "Apple's language for iOS, macOS & watchOS development", category: 'Mobile' },
+  { id: 'dart',        label: 'Dart / Flutter',  emoji: '🎯', roleId: '', description: "Google's language for cross-platform mobile apps (Flutter)", category: 'Mobile' },
+  // Data / AI
+  { id: 'sql',         label: 'SQL',             emoji: '🗄️',  roleId: '', description: 'Structured Query Language for databases', category: 'Data' },
+  { id: 'r',           label: 'R',               emoji: '📊', roleId: '', description: 'Language for statistical computing and data analysis', category: 'Data' },
+  { id: 'matlab',      label: 'MATLAB',          emoji: '📐', roleId: '', description: 'Language for numerical computing and engineering', category: 'Data' },
+  // Scripting / Other
+  { id: 'bash',        label: 'Bash / Shell',    emoji: '💻', roleId: '', description: 'Shell scripting for automation and system administration', category: 'Scripting' },
+  { id: 'powershell',  label: 'PowerShell',      emoji: '🪟', roleId: '', description: 'Windows scripting and automation language by Microsoft', category: 'Scripting' },
+  { id: 'lua',         label: 'Lua',             emoji: '🌙', roleId: '', description: 'Lightweight scripting language used in games and embedded', category: 'Scripting' },
+  { id: 'haskell',     label: 'Haskell',         emoji: '🔮', roleId: '', description: 'Pure functional programming language', category: 'Other' },
+  { id: 'elixir',      label: 'Elixir',          emoji: '💧', roleId: '', description: 'Functional language on the Erlang VM for scalable apps', category: 'Other' },
+  { id: 'scala',       label: 'Scala',           emoji: '⭐', roleId: '', description: 'JVM language combining OOP and functional programming', category: 'Other' },
+  { id: 'assembly',    label: 'Assembly',        emoji: '🔬', roleId: '', description: 'Low-level language that maps closely to machine code', category: 'Other' },
+];
+
 // ========== SLASH COMMANDS ==========
 const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
@@ -362,6 +403,8 @@ const commands = [
     .addStringOption(o => o.setName('action').setDescription('add / remove / list / clear').setRequired(true)
       .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }, { name: 'list', value: 'list' }, { name: 'clear', value: 'clear' }))
     .addStringOption(o => o.setName('word').setDescription('Word to add or remove')),
+
+  new SlashCommandBuilder().setName('langpanel').setDescription('Send programming language role panel (Admin only)'),
 
   new SlashCommandBuilder().setName('antilink').setDescription('Toggle anti-link protection (Admin only)')
     .addStringOption(o => o.setName('status').setDescription('on or off').setRequired(true)
@@ -716,6 +759,25 @@ client.on(Events.InteractionCreate, async interaction => {
 
       return interaction.reply({ content: `${isAccept ? '✅ Accepted' : '❌ Rejected'} the request from <@${targetUserId}>.`, ephemeral: true });
     }
+    if (interaction.customId.startsWith('lang_')) {
+      const langId = interaction.customId.replace('lang_', '');
+      const lang = LANGUAGE_ROLES.find(l => l.id === langId);
+      if (!lang) return interaction.reply({ content: '❌ Language not found.', ephemeral: true });
+      if (!lang.roleId) return interaction.reply({ content: `⚠️ The role for **${lang.label}** hasn't been set up yet. Ask an admin to add the role ID.`, ephemeral: true });
+
+      const role = interaction.guild.roles.cache.get(lang.roleId);
+      if (!role) return interaction.reply({ content: `❌ Role not found. Ask an admin to check the role ID for **${lang.label}**.`, ephemeral: true });
+
+      const member = interaction.member;
+      if (member.roles.cache.has(lang.roleId)) {
+        await member.roles.remove(role).catch(console.error);
+        return interaction.reply({ content: `✅ Removed the **${lang.emoji} ${lang.label}** role.`, ephemeral: true });
+      } else {
+        await member.roles.add(role).catch(console.error);
+        return interaction.reply({ content: `✅ You now have the **${lang.emoji} ${lang.label}** role!`, ephemeral: true });
+      }
+    }
+
     if (interaction.customId.startsWith('autorole_')) {
       const roleId = interaction.customId.replace('autorole_', '');
       const member = interaction.member;
@@ -1274,6 +1336,49 @@ React with 🎉 to enter!
       wordFilter = [];
       return interaction.reply({ content: '✅ Word filter cleared.', ephemeral: true });
     }
+  }
+
+
+  // LANGPANEL
+  if (commandName === 'langpanel') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+
+    await interaction.deferReply({ ephemeral: true });
+
+    const categories = [...new Set(LANGUAGE_ROLES.map(l => l.category))];
+
+    for (const category of categories) {
+      const langs = LANGUAGE_ROLES.filter(l => l.category === category);
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle(`💻 ${category} Languages`)
+        .setDescription(
+          langs.map(l => `${l.emoji} **${l.label}** — ${l.description}`).join('\n')
+        )
+        .setFooter({ text: 'Click a button to get or remove the role' });
+
+      // Build rows of buttons (max 5 per row, max 5 rows = 25 buttons)
+      const rows = [];
+      for (let i = 0; i < langs.length; i += 5) {
+        const row = new ActionRowBuilder();
+        for (const lang of langs.slice(i, i + 5)) {
+          row.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`lang_${lang.id}`)
+              .setLabel(lang.label)
+              .setEmoji(lang.emoji)
+              .setStyle(ButtonStyle.Secondary)
+          );
+        }
+        rows.push(row);
+      }
+
+      await interaction.channel.send({ embeds: [embed], components: rows });
+    }
+
+    return interaction.editReply('✅ Language role panels sent!');
   }
 
   // ANTILINK TOGGLE
