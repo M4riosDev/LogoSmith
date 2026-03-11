@@ -32,7 +32,7 @@ const client = new Client({
 const GUILD_ID = '1450458983402967134';
 
 const CONFIG = {
-  WELCOME_CHANNEL_ID: process.env.WELCOME_CHANNEL_ID || '',
+  WELCOME_CHANNEL_ID: process.env.WELCOME_CHANNEL_ID || '1450458984606863535',
   AUTO_ROLE_ID: process.env.AUTO_ROLE_ID || '1471461739026579588',
   TICKET_CATEGORY_ID: process.env.TICKET_CATEGORY_ID || '1481324268775149832',
   TICKET_SUPPORT_ROLE_ID: process.env.TICKET_SUPPORT_ROLE_ID || '1450568426916675710',
@@ -41,9 +41,14 @@ const CONFIG = {
   GROQ_API_KEY: process.env.GROQ_API_KEY || '',
   MOD_LOG_CHANNEL_ID: process.env.MOD_LOG_CHANNEL_ID || '1481343733399289868',
   STATS_CHANNEL_ID: process.env.STATS_CHANNEL_ID || '1481344079437631679',
+  MEMBERS_VC_ID: process.env.MEMBERS_VC_ID || '1481399945629139126',             // voice channel showing member count
+  BOOSTS_VC_ID: process.env.BOOSTS_VC_ID || '1481399867145326623',               // voice channel showing boost count
+  MINIGAMES_CHANNEL_ID: process.env.MINIGAMES_CHANNEL_ID || '1481339938887700660',
+  SERVICES_CHANNEL_ID: process.env.SERVICES_CHANNEL_ID || '1481292497886904451',
+  SERVICES_REVIEW_CHANNEL_ID: process.env.SERVICES_REVIEW_CHANNEL_ID || '1481399502949843024',
   MIN_ACCOUNT_AGE_DAYS: parseInt(process.env.MIN_ACCOUNT_AGE_DAYS || '7'),
   ANTI_LINK: process.env.ANTI_LINK === 'true',
-  ANTI_SPAM: process.env.ANTI_SPAM !== 'false',
+  ANTI_SPAM: process.env.ANTI_SPAM !== 'true',
 };
 
 const REACTION_ROLES = {
@@ -60,14 +65,14 @@ const aiCooldowns = {};
 const spamTracker = {};
 const warns = {};
 const games = {};
+const pendingRequests = {}; // { userId: messageId } — tracks pending service requests
 let statsMessageId = null;
 
-// XP rewards per game
 const GAME_XP = {
   trivia_correct: 25,
   coinflip_win: 10,
   rps_win: 10,
-  roll_lucky: 15, // rolling max
+  roll_lucky: 15,
 };
 
 // ========== HELPERS ==========
@@ -103,7 +108,26 @@ async function modLog(action, target, moderator, reason, extra = '') {
   channel.send({ embeds: [embed] }).catch(() => {});
 }
 
-// ========== SERVER STATS EMBED ==========
+// ========== VOICE CHANNEL STATS ==========
+// Updates the two voice channels: "👥 Members: 42" and "🚀 Boosts: 14"
+async function updateVoiceStats(guild) {
+  if (!guild) return;
+
+  const memberCount = guild.memberCount;
+  const boostCount = guild.premiumSubscriptionCount || 0;
+
+  if (CONFIG.MEMBERS_VC_ID) {
+    const vc = guild.channels.cache.get(CONFIG.MEMBERS_VC_ID);
+    if (vc) await vc.setName(`👥 Members: ${memberCount}`).catch(() => {});
+  }
+
+  if (CONFIG.BOOSTS_VC_ID) {
+    const vc = guild.channels.cache.get(CONFIG.BOOSTS_VC_ID);
+    if (vc) await vc.setName(`🚀 Boosts: ${boostCount}`).catch(() => {});
+  }
+}
+
+// ========== EMBED STATS ==========
 async function buildStatsEmbed(guild) {
   await guild.members.fetch();
   const totalMembers = guild.memberCount;
@@ -134,7 +158,7 @@ async function buildStatsEmbed(guild) {
       { name: '💬 Text Channels', value: `${textChannels}`, inline: true },
       { name: '🔊 Voice Channels', value: `${voiceChannels}`, inline: true },
       { name: '🏷️ Roles', value: `${roles}`, inline: true },
-      { name: '🚀 Boosts', value: `${boostCount} boosts (Tier ${boostTier})`, inline: true },
+      { name: '🚀 Boosts', value: `${boostCount} (Tier ${boostTier})`, inline: true },
       { name: '📅 Server Created', value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`, inline: true },
     )
     .setFooter({ text: 'Last updated' })
@@ -262,6 +286,9 @@ const commands = [
   new SlashCommandBuilder().setName('purge').setDescription('Bulk delete messages')
     .addIntegerOption(o => o.setName('amount').setDescription('Amount (max 100)').setRequired(true)),
 
+  new SlashCommandBuilder().setName('clear').setDescription('Delete your own messages in this channel')
+    .addIntegerOption(o => o.setName('amount').setDescription('Number of your messages to delete (max 50)').setRequired(true)),
+
   new SlashCommandBuilder().setName('lock').setDescription('Lock the current channel (Admin only)')
     .addStringOption(o => o.setName('reason').setDescription('Reason (optional)')),
 
@@ -270,7 +297,7 @@ const commands = [
 
   new SlashCommandBuilder().setName('say').setDescription('Make the bot say something (Admin only)')
     .addStringOption(o => o.setName('message').setDescription('Message to send').setRequired(true))
-    .addChannelOption(o => o.setName('channel').setDescription('Channel to send in (default: current)')),
+    .addChannelOption(o => o.setName('channel').setDescription('Channel (default: current)')),
 
   new SlashCommandBuilder().setName('level').setDescription('Check level')
     .addUserOption(o => o.setName('user').setDescription('User (optional)')),
@@ -282,6 +309,8 @@ const commands = [
   new SlashCommandBuilder().setName('reactionroles').setDescription('Send reaction roles message (Admin only)'),
   new SlashCommandBuilder().setName('autoroles').setDescription('Send auto role panel with all server roles (Admin only)'),
   new SlashCommandBuilder().setName('serverstats').setDescription('Post/refresh live server stats (Admin only)'),
+
+  new SlashCommandBuilder().setName('setupstats').setDescription('Setup voice channel stats counters (Admin only)'),
 
   new SlashCommandBuilder().setName('ai').setDescription('Ask the AI a question')
     .addStringOption(o => o.setName('question').setDescription('Your question').setRequired(true)),
@@ -321,12 +350,36 @@ client.once(Events.ClientReady, async () => {
   } catch (err) {
     console.error('❌ Failed to register commands:', err);
   }
-  await updateStatsMessage();
-  setInterval(updateStatsMessage, 5 * 60 * 1000);
+  // Initial stats update
+  const guild = client.guilds.cache.get(GUILD_ID);
+  if (guild) {
+    await updateStatsMessage();
+    await updateVoiceStats(guild);
+  }
+  // Auto-refresh every 5 minutes
+  setInterval(async () => {
+    const g = client.guilds.cache.get(GUILD_ID);
+    await updateStatsMessage();
+    if (g) await updateVoiceStats(g);
+  }, 5 * 60 * 1000);
 });
 
-client.on(Events.GuildMemberAdd, () => updateStatsMessage());
-client.on(Events.GuildMemberRemove, () => updateStatsMessage());
+// Refresh on member join/leave
+client.on(Events.GuildMemberAdd, async member => {
+  await updateVoiceStats(member.guild);
+  await updateStatsMessage();
+});
+client.on(Events.GuildMemberRemove, async member => {
+  await updateVoiceStats(member.guild);
+  await updateStatsMessage();
+});
+// Refresh on boost change
+client.on(Events.GuildUpdate, async (oldGuild, newGuild) => {
+  if (oldGuild.premiumSubscriptionCount !== newGuild.premiumSubscriptionCount) {
+    await updateVoiceStats(newGuild);
+    await updateStatsMessage();
+  }
+});
 
 // ========== WELCOME + AUTO ROLE + ANTI-ALT ==========
 client.on(Events.GuildMemberAdd, async member => {
@@ -394,7 +447,7 @@ client.on(Events.MessageCreate, async message => {
       delete games[message.channel.id];
       const leveledUp = addXp(message.author.id, GAME_XP.trivia_correct);
       let reply = `🎉 Correct! You earned **+${GAME_XP.trivia_correct} XP**!`;
-      if (leveledUp !== null) reply += ` 🆙 You leveled up to **Level ${leveledUp}**!`;
+      if (leveledUp !== null) reply += ` 🆙 Level up! You are now **Level ${leveledUp}**!`;
       return message.reply(reply);
     }
   }
@@ -423,6 +476,51 @@ client.on(Events.MessageCreate, async message => {
     await message.reply(`🤖 ${chunks[0]}`);
     for (let i = 1; i < chunks.length; i++) await message.channel.send(chunks[i]);
   }
+
+  // SERVICES CHANNEL — user sends a request, forwarded to review channel
+  if (CONFIG.SERVICES_CHANNEL_ID && message.channel.id === CONFIG.SERVICES_CHANNEL_ID) {
+    if (message.content.startsWith('/')) return;
+
+    // Block if user already has a pending request
+    if (pendingRequests[message.author.id]) {
+      await message.delete().catch(() => {});
+      const warn = await message.channel.send(`❌ ${message.author} You already have a **pending request**. Wait for an admin to review it before submitting a new one.`);
+      setTimeout(() => warn.delete().catch(() => {}), 7000);
+      return;
+    }
+
+    await message.delete().catch(() => {});
+
+    const reviewChannel = CONFIG.SERVICES_REVIEW_CHANNEL_ID
+      ? message.guild.channels.cache.get(CONFIG.SERVICES_REVIEW_CHANNEL_ID)
+      : message.channel;
+
+    if (!reviewChannel) return;
+
+    const embed = new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setTitle('📋 New Service Request')
+      .setDescription(message.content)
+      .addFields(
+        { name: '👤 From', value: `${message.author} (${message.author.tag})`, inline: true },
+        { name: '📅 Submitted', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
+      )
+      .setThumbnail(message.author.displayAvatarURL())
+      .setFooter({ text: `User ID: ${message.author.id}` })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`service_accept_${message.author.id}`).setLabel('✅ Accept').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`service_reject_${message.author.id}`).setLabel('❌ Reject').setStyle(ButtonStyle.Danger),
+    );
+
+    const reviewMsg = await reviewChannel.send({ embeds: [embed], components: [row] });
+    pendingRequests[message.author.id] = reviewMsg.id;
+
+    const notify = await message.channel.send(`📬 ${message.author} Your request has been submitted! An admin will review it shortly.`);
+    setTimeout(() => notify.delete().catch(() => {}), 8000);
+  }
+
 });
 
 // ========== REACTION ROLES ==========
@@ -496,6 +594,41 @@ client.on(Events.InteractionCreate, async interaction => {
       setTimeout(() => channel.delete().catch(console.error), 5000);
       return;
     }
+    if (interaction.customId.startsWith('service_accept_') || interaction.customId.startsWith('service_reject_')) {
+      if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+        return interaction.reply({ content: '❌ Only admins can accept or reject requests.', ephemeral: true });
+
+      const isAccept = interaction.customId.startsWith('service_accept_');
+      const targetUserId = interaction.customId.replace('service_accept_', '').replace('service_reject_', '');
+      const targetUser = await client.users.fetch(targetUserId).catch(() => null);
+
+      // Remove buttons from the review message
+      await interaction.message.edit({ components: [] }).catch(() => {});
+
+      // Update embed color
+      const oldEmbed = interaction.message.embeds[0];
+      const updatedEmbed = EmbedBuilder.from(oldEmbed)
+        .setColor(isAccept ? 0x57f287 : 0xed4245)
+        .addFields({ name: isAccept ? '✅ Accepted by' : '❌ Rejected by', value: `${interaction.user.tag}`, inline: true });
+      await interaction.message.edit({ embeds: [updatedEmbed] }).catch(() => {});
+
+      // Clear pending request
+      delete pendingRequests[targetUserId];
+
+      // Notify the user via DM
+      if (targetUser) {
+        const dmEmbed = new EmbedBuilder()
+          .setColor(isAccept ? 0x57f287 : 0xed4245)
+          .setTitle(isAccept ? '✅ Service Request Accepted' : '❌ Service Request Rejected')
+          .setDescription(isAccept
+            ? `Your service request in **${interaction.guild.name}** has been **accepted**! An admin will reach out to you shortly.`
+            : `Your service request in **${interaction.guild.name}** has been **rejected**. Feel free to submit a new one.`)
+          .setTimestamp();
+        await targetUser.send({ embeds: [dmEmbed] }).catch(() => {});
+      }
+
+      return interaction.reply({ content: `${isAccept ? '✅ Accepted' : '❌ Rejected'} the request from <@${targetUserId}>.`, ephemeral: true });
+    }
     if (interaction.customId.startsWith('autorole_')) {
       const roleId = interaction.customId.replace('autorole_', '');
       const member = interaction.member;
@@ -522,6 +655,9 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.BanMembers))
       return interaction.reply({ content: '❌ No permission.', ephemeral: true });
     const target = interaction.options.getMember('user');
+    if (!target) return interaction.reply({ content: '❌ User not found.', ephemeral: true });
+    if (target.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ You cannot ban an admin.', ephemeral: true });
     const reason = interaction.options.getString('reason') || 'No reason provided';
     await target.ban({ reason }).catch(console.error);
     await modLog('BAN', target.user, interaction.user, reason);
@@ -533,6 +669,9 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.KickMembers))
       return interaction.reply({ content: '❌ No permission.', ephemeral: true });
     const target = interaction.options.getMember('user');
+    if (!target) return interaction.reply({ content: '❌ User not found.', ephemeral: true });
+    if (target.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ You cannot kick an admin.', ephemeral: true });
     const reason = interaction.options.getString('reason') || 'No reason provided';
     await target.kick(reason).catch(console.error);
     await modLog('KICK', target.user, interaction.user, reason);
@@ -544,6 +683,9 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers))
       return interaction.reply({ content: '❌ No permission.', ephemeral: true });
     const target = interaction.options.getMember('user');
+    if (!target) return interaction.reply({ content: '❌ User not found.', ephemeral: true });
+    if (target.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ You cannot mute an admin.', ephemeral: true });
     const minutes = interaction.options.getInteger('minutes');
     await target.timeout(minutes * 60 * 1000).catch(console.error);
     await modLog('MUTE', target.user, interaction.user, `${minutes} minutes`);
@@ -585,7 +727,7 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.reply(`✅ Cleared all warnings for **${target.tag}**.`);
   }
 
-  // PURGE
+  // PURGE (mods - any messages)
   if (commandName === 'purge') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages))
       return interaction.reply({ content: '❌ No permission.', ephemeral: true });
@@ -594,19 +736,39 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.reply({ content: `🗑️ Deleted **${amount}** messages.`, ephemeral: true });
   }
 
+  // CLEAR (users - own messages only, not admins)
+  if (commandName === 'clear') {
+    if (interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admins cannot use `/clear`. Use `/purge` instead.', ephemeral: true });
+    const amount = Math.min(interaction.options.getInteger('amount'), 50);
+    await interaction.deferReply({ ephemeral: true });
+
+    // Fetch recent messages and filter by author
+    const messages = await interaction.channel.messages.fetch({ limit: 100 }).catch(() => null);
+    if (!messages) return interaction.editReply('❌ Could not fetch messages.');
+
+    const userMessages = messages
+      .filter(m => m.author.id === interaction.user.id)
+      .first(amount);
+
+    let deleted = 0;
+    for (const msg of userMessages) {
+      await msg.delete().catch(() => {});
+      deleted++;
+      await new Promise(r => setTimeout(r, 300)); // small delay to avoid rate limit
+    }
+
+    return interaction.editReply(`✅ Deleted **${deleted}** of your messages.`);
+  }
+
   // LOCK
   if (commandName === 'lock') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
       return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     const reason = interaction.options.getString('reason') || 'No reason provided';
-    await interaction.channel.permissionOverwrites.edit(interaction.guild.id, {
-      SendMessages: false,
-    }).catch(console.error);
-    const embed = new EmbedBuilder()
-      .setColor(0xed4245)
-      .setTitle('🔒 Channel Locked')
-      .setDescription(`This channel has been locked by ${interaction.user}.\n**Reason:** ${reason}`)
-      .setTimestamp();
+    await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: false }).catch(console.error);
+    const embed = new EmbedBuilder().setColor(0xed4245).setTitle('🔒 Channel Locked')
+      .setDescription(`This channel has been locked by ${interaction.user}.\n**Reason:** ${reason}`).setTimestamp();
     await interaction.channel.send({ embeds: [embed] });
     await modLog('LOCK', { tag: `#${interaction.channel.name}`, id: interaction.channel.id }, interaction.user, reason);
     return interaction.reply({ content: '✅ Channel locked.', ephemeral: true });
@@ -617,14 +779,9 @@ client.on(Events.InteractionCreate, async interaction => {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
       return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     const reason = interaction.options.getString('reason') || 'No reason provided';
-    await interaction.channel.permissionOverwrites.edit(interaction.guild.id, {
-      SendMessages: null, // reset to default
-    }).catch(console.error);
-    const embed = new EmbedBuilder()
-      .setColor(0x57f287)
-      .setTitle('🔓 Channel Unlocked')
-      .setDescription(`This channel has been unlocked by ${interaction.user}.\n**Reason:** ${reason}`)
-      .setTimestamp();
+    await interaction.channel.permissionOverwrites.edit(interaction.guild.id, { SendMessages: null }).catch(console.error);
+    const embed = new EmbedBuilder().setColor(0x57f287).setTitle('🔓 Channel Unlocked')
+      .setDescription(`This channel has been unlocked by ${interaction.user}.\n**Reason:** ${reason}`).setTimestamp();
     await interaction.channel.send({ embeds: [embed] });
     await modLog('UNLOCK', { tag: `#${interaction.channel.name}`, id: interaction.channel.id }, interaction.user, reason);
     return interaction.reply({ content: '✅ Channel unlocked.', ephemeral: true });
@@ -706,7 +863,7 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.reply({ content: `✅ Auto roles panel sent with **${count}** roles!`, ephemeral: true });
   }
 
-  // SERVER STATS
+  // SERVER STATS (embed)
   if (commandName === 'serverstats') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
       return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
@@ -714,6 +871,56 @@ client.on(Events.InteractionCreate, async interaction => {
       return interaction.reply({ content: '❌ Set `STATS_CHANNEL_ID` in Railway Variables first.', ephemeral: true });
     await updateStatsMessage();
     return interaction.reply({ content: `✅ Stats posted/updated in <#${CONFIG.STATS_CHANNEL_ID}>! Auto-refreshes every 5 minutes.`, ephemeral: true });
+  }
+
+  // SETUP STATS VOICE CHANNELS
+  if (commandName === 'setupstats') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+
+    await interaction.deferReply({ ephemeral: true });
+    const guild = interaction.guild;
+    const boostCount = guild.premiumSubscriptionCount || 0;
+
+    // Create a category for the stats channels
+    const category = await guild.channels.create({
+      name: '📊 Server Stats',
+      type: ChannelType.GuildCategory,
+      permissionOverwrites: [
+        { id: guild.id, deny: [PermissionsBitField.Flags.Connect] }, // no one can join
+      ],
+    });
+
+    const membersVC = await guild.channels.create({
+      name: `👥 Members: ${guild.memberCount}`,
+      type: ChannelType.GuildVoice,
+      parent: category.id,
+      permissionOverwrites: [
+        { id: guild.id, deny: [PermissionsBitField.Flags.Connect] },
+      ],
+    });
+
+    const boostsVC = await guild.channels.create({
+      name: `🚀 Boosts: ${boostCount}`,
+      type: ChannelType.GuildVoice,
+      parent: category.id,
+      permissionOverwrites: [
+        { id: guild.id, deny: [PermissionsBitField.Flags.Connect] },
+      ],
+    });
+
+    // Save IDs in config
+    CONFIG.MEMBERS_VC_ID = membersVC.id;
+    CONFIG.BOOSTS_VC_ID = boostsVC.id;
+
+    return interaction.editReply(
+      `✅ Stats voice channels created!\n\n` +
+      `👥 **Members:** ${membersVC}\n` +
+      `🚀 **Boosts:** ${boostsVC}\n\n` +
+      `⚠️ To make them **permanent** across restarts, add these to Railway Variables:\n` +
+      `\`MEMBERS_VC_ID = ${membersVC.id}\`\n` +
+      `\`BOOSTS_VC_ID = ${boostsVC.id}\``
+    );
   }
 
   // AI
@@ -743,11 +950,18 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   // TRIVIA
+  // Helper: check if minigames are restricted to a specific channel
+  const minigameCommands = ['trivia', 'coinflip', 'roll', 'rps', '8ball'];
+  if (minigameCommands.includes(commandName) && CONFIG.MINIGAMES_CHANNEL_ID && interaction.channel.id !== CONFIG.MINIGAMES_CHANNEL_ID) {
+    return interaction.reply({ content: `🎮 Mini games can only be played in <#${CONFIG.MINIGAMES_CHANNEL_ID}>!`, ephemeral: true });
+  }
+
+  // TRIVIA
   if (commandName === 'trivia') {
     if (games[interaction.channel.id]) return interaction.reply({ content: '❌ A trivia game is already running!', ephemeral: true });
     const q = triviaQuestions[Math.floor(Math.random() * triviaQuestions.length)];
     const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('🎮 Trivia!')
-      .setDescription(`**${q.q}**\n\nType your answer in chat! You have **30 seconds**.\n\n🏆 Reward: **+${GAME_XP.trivia_correct} XP** for correct answer!`);
+      .setDescription(`**${q.q}**\n\nType your answer in chat! You have **30 seconds**.\n\n🏆 Reward: **+${GAME_XP.trivia_correct} XP**`);
     await interaction.reply({ embeds: [embed] });
     const timeout = setTimeout(() => {
       if (games[interaction.channel.id]) {
@@ -766,7 +980,7 @@ client.on(Events.InteractionCreate, async interaction => {
     let reply = `🪙 The coin landed on **${result}**! You ${won ? `**won** 🎉 +**${GAME_XP.coinflip_win} XP**` : '**lost** 😔'}!`;
     if (won) {
       const leveledUp = addXp(interaction.user.id, GAME_XP.coinflip_win);
-      if (leveledUp !== null) reply += ` 🆙 Level up! You are now **Level ${leveledUp}**!`;
+      if (leveledUp !== null) reply += ` 🆙 Level up! **Level ${leveledUp}**!`;
     }
     return interaction.reply(reply);
   }
@@ -781,7 +995,7 @@ client.on(Events.InteractionCreate, async interaction => {
     if (isMax) {
       const leveledUp = addXp(interaction.user.id, GAME_XP.roll_lucky);
       reply += ` 🎯 Lucky roll! **+${GAME_XP.roll_lucky} XP**!`;
-      if (leveledUp !== null) reply += ` 🆙 Level up! You are now **Level ${leveledUp}**!`;
+      if (leveledUp !== null) reply += ` 🆙 Level up! **Level ${leveledUp}**!`;
     }
     return interaction.reply(reply);
   }
@@ -793,16 +1007,18 @@ client.on(Events.InteractionCreate, async interaction => {
     const player = interaction.options.getString('choice');
     const bot = choices[Math.floor(Math.random() * 3)];
     let outcome;
-    if (player === bot) outcome = "It's a **tie**! 🤝";
+    if (player === bot) outcome = 'tie';
     else if ((player === 'rock' && bot === 'scissors') || (player === 'paper' && bot === 'rock') || (player === 'scissors' && bot === 'paper')) outcome = 'win';
     else outcome = 'lose';
     let reply = `${emojis[player]} vs ${emojis[bot]} — `;
     if (outcome === 'win') {
       const leveledUp = addXp(interaction.user.id, GAME_XP.rps_win);
       reply += `You **win**! 🎉 **+${GAME_XP.rps_win} XP**!`;
-      if (leveledUp !== null) reply += ` 🆙 Level up! You are now **Level ${leveledUp}**!`;
+      if (leveledUp !== null) reply += ` 🆙 Level up! **Level ${leveledUp}**!`;
+    } else if (outcome === 'lose') {
+      reply += 'You **lose**! 😔';
     } else {
-      reply += outcome === 'lose' ? 'You **lose**! 😔' : outcome;
+      reply += "It's a **tie**! 🤝";
     }
     return interaction.reply(reply);
   }
