@@ -654,8 +654,15 @@ client.on(Events.MessageCreate, async message => {
       new ButtonBuilder().setCustomId(`service_reject_${message.author.id}`).setLabel('❌ Reject').setStyle(ButtonStyle.Danger),
     );
 
+    // If there's an image, set it on the embed and/or send separately
+    if (imageAttachments.length > 0) embed.setImage(imageAttachments[0]);
+    if (imageAttachments.length > 1) embed.addFields({ name: '📎 Additional images', value: imageAttachments.slice(1).join('\n') });
+
     const reviewMsg = await reviewChannel.send({ embeds: [embed], components: [row] });
-    pendingRequests[message.author.id] = { msgId: reviewMsg.id, content: message.content };
+    // Grab image attachments if any
+    const imageAttachments = message.attachments.filter(a => a.contentType?.startsWith('image/')).map(a => a.url);
+
+    pendingRequests[message.author.id] = { msgId: reviewMsg.id, content: message.content, images: imageAttachments };
 
     const notify = await message.channel.send(`📬 ${message.author} Your request has been submitted! An admin will review it shortly.`);
     setTimeout(() => notify.delete().catch(() => {}), 8000);
@@ -805,11 +812,14 @@ client.on(Events.InteractionCreate, async interaction => {
         const servicesChannel = interaction.guild.channels.cache.get(CONFIG.SERVICES_CHANNEL_ID);
         if (servicesChannel) {
           const requestContent = pendingRequests[targetUserId]?.content || '*(content unavailable)*';
+          const savedImages = pendingRequests[targetUserId]?.images || [];
           const announceEmbed = new EmbedBuilder()
             .setColor(0xffffff)
             .setAuthor({ name: targetUser ? targetUser.tag : targetUserId, iconURL: targetUser ? targetUser.displayAvatarURL() : undefined })
-            .setDescription(requestContent)
+            .setDescription(requestContent || null)
             .setTimestamp();
+          if (savedImages.length > 0) announceEmbed.setImage(savedImages[0]);
+          if (savedImages.length > 1) announceEmbed.addFields({ name: '📎 More images', value: savedImages.slice(1).join('\n') });
           await servicesChannel.send({ embeds: [announceEmbed] }).catch(() => {});
         }
       }
