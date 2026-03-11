@@ -37,7 +37,7 @@ const CONFIG = {
   TICKET_SUPPORT_ROLE_ID: process.env.TICKET_SUPPORT_ROLE_ID || '1450568426916675710',
   REACTION_ROLE_MESSAGE_ID: process.env.REACTION_ROLE_MESSAGE_ID || '',
   AI_CHANNEL_ID: process.env.AI_CHANNEL_ID || '1481324102953209928',
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
+  GROQ_API_KEY: process.env.GROQ_API_KEY || '',
 };
 
 const REACTION_ROLES = {
@@ -67,26 +67,31 @@ function addXp(userId, amount) {
   return null;
 }
 
-// ========== AI ==========
-async function callClaude(prompt) {
-  if (!CONFIG.ANTHROPIC_API_KEY) return '❌ No Anthropic API key set. Add `ANTHROPIC_API_KEY` to your Railway Variables.';
+// ========== AI (Groq - Free) ==========
+async function callGroq(prompt) {
+  if (!CONFIG.GROQ_API_KEY) return '❌ No Groq API key set. Add `GROQ_API_KEY` to your Railway Variables.\nGet a free key at https://console.groq.com';
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': CONFIG.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
+        'Authorization': `Bearer ${CONFIG.GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        messages: [{ role: 'user', content: prompt }],
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a helpful Discord bot assistant. Be concise and friendly. Keep responses under 1800 characters when possible.',
+          },
+          { role: 'user', content: prompt },
+        ],
       }),
     });
     const data = await res.json();
-    if (data.error) return `❌ API Error: ${data.error.message}`;
-    return data.content?.[0]?.text || '❌ No response received.';
+    if (data.error) return `❌ Groq Error: ${data.error.message}`;
+    return data.choices?.[0]?.message?.content || '❌ No response received.';
   } catch (err) {
     return `❌ Error: ${err.message}`;
   }
@@ -217,7 +222,7 @@ client.on(Events.MessageCreate, async message => {
     }
     aiCooldowns[message.author.id] = aiNow;
     await message.channel.sendTyping().catch(() => {});
-    const answer = await callClaude(message.content);
+    const answer = await callGroq(message.content);
     const chunks = answer.match(/[\s\S]{1,1900}/g) || [answer];
     await message.reply(`🤖 ${chunks[0]}`);
     for (let i = 1; i < chunks.length; i++) await message.channel.send(chunks[i]);
@@ -453,7 +458,7 @@ client.on(Events.InteractionCreate, async interaction => {
   if (commandName === 'ai') {
     const question = interaction.options.getString('question');
     await interaction.deferReply();
-    const answer = await callClaude(question);
+    const answer = await callGroq(question);
     const reply = `🤖 **${question}**\n\n${answer}`;
     return interaction.editReply(reply.slice(0, 2000));
   }
@@ -484,7 +489,7 @@ client.on(Events.InteractionCreate, async interaction => {
       try {
         await member.send({ embeds: [embed] });
         success++;
-        await new Promise(r => setTimeout(r, 500)); // anti rate-limit delay
+        await new Promise(r => setTimeout(r, 500));
       } catch {
         failed++;
       }
