@@ -48,6 +48,7 @@ const CONFIG = {
   MIN_ACCOUNT_AGE_DAYS: parseInt(process.env.MIN_ACCOUNT_AGE_DAYS || '7'),
   ANTI_LINK: process.env.ANTI_LINK === 'true',
   ANTI_SPAM: process.env.ANTI_SPAM !== 'true',
+};
 
 const REACTION_ROLES = {
   '🔴': process.env.ROLE_RED || '',
