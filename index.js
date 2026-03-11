@@ -24,6 +24,7 @@ const client = new Client({
     GatewayIntentBits.GuildModeration,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildVoiceStates,
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
@@ -66,6 +67,13 @@ const warns = {};
 const games = {};
 const pendingRequests = {}; // { userId: messageId } — tracks pending service requests
 let statsMessageId = null;
+
+// Giveaway, Poll, Daily, Word filter, Voice XP
+const giveaways = {};      // { channelId_messageId: { prize, endTime, entries, hostId } }
+const polls = {};           // { messageId: { question, options, votes: {userId: optionIndex} } }
+const dailyCooldowns = {};  // { userId: timestamp }
+const voiceJoinTime = {};   // { userId: timestamp } for voice XP
+let wordFilter = [];        // array of blocked words
 
 const GAME_XP = {
   trivia_correct: 25,
@@ -333,6 +341,28 @@ const commands = [
   new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8-ball')
     .addStringOption(o => o.setName('question').setDescription('Your question').setRequired(true)),
 
+
+  new SlashCommandBuilder().setName('help').setDescription('Show all commands available to you'),
+
+  new SlashCommandBuilder().setName('daily').setDescription('Claim your daily XP reward'),
+
+  new SlashCommandBuilder().setName('giveaway').setDescription('Start a giveaway (Admin only)')
+    .addStringOption(o => o.setName('prize').setDescription('What are you giving away?').setRequired(true))
+    .addIntegerOption(o => o.setName('minutes').setDescription('Duration in minutes').setRequired(true))
+    .addIntegerOption(o => o.setName('winners').setDescription('Number of winners (default: 1)')),
+
+  new SlashCommandBuilder().setName('reroll').setDescription('Reroll a giveaway (Admin only)')
+    .addStringOption(o => o.setName('message_id').setDescription('Message ID of the giveaway').setRequired(true)),
+
+  new SlashCommandBuilder().setName('poll').setDescription('Create a poll (Admin only)')
+    .addStringOption(o => o.setName('question').setDescription('Poll question').setRequired(true))
+    .addStringOption(o => o.setName('options').setDescription('Options separated by | e.g. Yes|No|Maybe').setRequired(true)),
+
+  new SlashCommandBuilder().setName('wordfilter').setDescription('Manage word filter (Admin only)')
+    .addStringOption(o => o.setName('action').setDescription('add / remove / list / clear').setRequired(true)
+      .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }, { name: 'list', value: 'list' }, { name: 'clear', value: 'clear' }))
+    .addStringOption(o => o.setName('word').setDescription('Word to add or remove')),
+
   new SlashCommandBuilder().setName('antilink').setDescription('Toggle anti-link protection (Admin only)')
     .addStringOption(o => o.setName('status').setDescription('on or off').setRequired(true)
       .addChoices({ name: 'On', value: 'true' }, { name: 'Off', value: 'false' })),
@@ -377,6 +407,37 @@ client.on(Events.GuildUpdate, async (oldGuild, newGuild) => {
   if (oldGuild.premiumSubscriptionCount !== newGuild.premiumSubscriptionCount) {
     await updateVoiceStats(newGuild);
     await updateStatsMessage();
+  }
+});
+
+
+// ========== VOICE XP ==========
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  const userId = newState.member?.user?.id || oldState.member?.user?.id;
+  if (!userId) return;
+  const member = newState.member || oldState.member;
+  if (member?.user?.bot) return;
+
+  // User joined a voice channel
+  if (!oldState.channelId && newState.channelId) {
+    voiceJoinTime[userId] = Date.now();
+  }
+
+  // User left a voice channel
+  if (oldState.channelId && !newState.channelId) {
+    if (voiceJoinTime[userId]) {
+      const minutes = Math.floor((Date.now() - voiceJoinTime[userId]) / 60000);
+      delete voiceJoinTime[userId];
+      if (minutes >= 1) {
+        const xpGain = Math.min(minutes * 3, 60); // 3 XP per minute, max 60 per session
+        const leveledUp = addXp(userId, xpGain);
+        if (leveledUp !== null) {
+          const guild = oldState.guild;
+          const welcomeChannel = guild.channels.cache.get(CONFIG.WELCOME_CHANNEL_ID);
+          if (welcomeChannel) welcomeChannel.send(`🎙️ <@${userId}> earned **+${xpGain} XP** from voice and leveled up to **Level ${leveledUp}**!`).catch(() => {});
+        }
+      }
+    }
   }
 });
 
@@ -435,6 +496,19 @@ client.on(Events.MessageCreate, async message => {
       await message.member.timeout(60000).catch(console.error);
       await message.channel.send(`🤖 ${message.author} has been muted for **1 minute** for spamming.`);
       await modLog('ANTI-SPAM', message.author, null, 'Spamming', '5+ messages in 5 seconds');
+    }
+  }
+
+  // WORD FILTER
+  if (wordFilter.length > 0 && !message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+    const lower = message.content.toLowerCase();
+    const matched = wordFilter.find(w => lower.includes(w.toLowerCase()));
+    if (matched) {
+      await message.delete().catch(() => {});
+      const warn = await message.channel.send(`🚫 ${message.author} Your message was removed for containing a blocked word.`);
+      setTimeout(() => warn.delete().catch(() => {}), 5000);
+      await modLog('WORD-FILTER', message.author, null, `Blocked word: "${matched}"`, message.content.slice(0, 100));
+      return;
     }
   }
 
@@ -1042,6 +1116,164 @@ client.on(Events.InteractionCreate, async interaction => {
     const embed = new EmbedBuilder().setColor(0x2f3136).setTitle('🎱 Magic 8-Ball')
       .addFields({ name: 'Question', value: interaction.options.getString('question') }, { name: 'Answer', value: responses[Math.floor(Math.random() * responses.length)] });
     return interaction.reply({ embeds: [embed] });
+  }
+
+
+  // HELP
+  if (commandName === 'help') {
+    const isAdmin = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
+    const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('📖 Available Commands')
+      .setFooter({ text: 'Showing commands available to you' })
+      .setTimestamp();
+
+    embed.addFields({ name: '🟢 General', value: '`/ping` `/level` `/leaderboard` `/ticket` `/ai` `/clear` `/daily` `/help`' });
+    embed.addFields({ name: `🎮 Mini Games (only in <#${CONFIG.MINIGAMES_CHANNEL_ID || 'minigames'}>)`, value: '`/trivia` `/coinflip` `/roll` `/rps` `/8ball`' });
+
+    if (isMod || isAdmin) {
+      embed.addFields({ name: '🟡 Moderation', value: '`/warn` `/warnings` `/clearwarnings` `/mute` `/kick` `/ban` `/purge`' });
+    }
+    if (isAdmin) {
+      embed.addFields({ name: '🔴 Admin', value: '`/lock` `/unlock` `/say` `/ticketpanel` `/reactionroles` `/autoroles` `/serverstats` `/setupstats` `/dmall` `/antilink` `/wordfilter` `/giveaway` `/reroll` `/poll`' });
+    }
+
+    return interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+
+  // DAILY
+  if (commandName === 'daily') {
+    const now = Date.now();
+    const last = dailyCooldowns[interaction.user.id] || 0;
+    const cooldown = 24 * 60 * 60 * 1000;
+    if (now - last < cooldown) {
+      const remaining = cooldown - (now - last);
+      const hours = Math.floor(remaining / 3600000);
+      const minutes = Math.floor((remaining % 3600000) / 60000);
+      return interaction.reply({ content: `⏳ You already claimed your daily reward! Come back in **${hours}h ${minutes}m**.`, ephemeral: true });
+    }
+    dailyCooldowns[interaction.user.id] = now;
+    const xp = 100;
+    const leveledUp = addXp(interaction.user.id, xp);
+    let reply = `🎁 Daily reward claimed! **+${xp} XP**!`;
+    if (leveledUp !== null) reply += ` 🆙 You leveled up to **Level ${leveledUp}**!`;
+    return interaction.reply(reply);
+  }
+
+  // GIVEAWAY
+  if (commandName === 'giveaway') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const prize = interaction.options.getString('prize');
+    const minutes = interaction.options.getInteger('minutes');
+    const winnerCount = interaction.options.getInteger('winners') || 1;
+    const endTime = Date.now() + minutes * 60000;
+
+    const embed = new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setTitle('🎉 GIVEAWAY!')
+      .setDescription(`**Prize:** ${prize}
+
+React with 🎉 to enter!
+
+**Winners:** ${winnerCount}
+**Ends:** <t:${Math.floor(endTime / 1000)}:R>`)
+      .setFooter({ text: `Hosted by ${interaction.user.tag}` })
+      .setTimestamp(endTime);
+
+    const msg = await interaction.channel.send({ embeds: [embed] });
+    await msg.react('🎉');
+
+    giveaways[msg.id] = { prize, endTime, winnerCount, hostId: interaction.user.id, channelId: interaction.channel.id, entries: new Set() };
+
+    setTimeout(async () => {
+      const gw = giveaways[msg.id];
+      if (!gw) return;
+      const entries = [...gw.entries];
+      const endEmbed = new EmbedBuilder().setColor(0xed4245).setTitle('🎉 GIVEAWAY ENDED').setTimestamp();
+      if (entries.length === 0) {
+        endEmbed.setDescription(`**Prize:** ${gw.prize}
+
+😔 No one entered the giveaway!`);
+        await msg.edit({ embeds: [endEmbed] }).catch(() => {});
+        delete giveaways[msg.id];
+        return;
+      }
+      const shuffled = entries.sort(() => Math.random() - 0.5);
+      const winners = shuffled.slice(0, Math.min(gw.winnerCount, entries.length));
+      endEmbed.setDescription(`**Prize:** ${gw.prize}
+
+🏆 **Winner(s):** ${winners.map(id => `<@${id}>`).join(', ')}`);
+      await msg.edit({ embeds: [endEmbed] }).catch(() => {});
+      await interaction.channel.send(`🎉 Congratulations ${winners.map(id => `<@${id}>`).join(', ')}! You won **${gw.prize}**!`);
+      delete giveaways[msg.id];
+    }, minutes * 60000);
+
+    return interaction.reply({ content: `✅ Giveaway started for **${minutes}** minute(s)!`, ephemeral: true });
+  }
+
+  // REROLL
+  if (commandName === 'reroll') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const msgId = interaction.options.getString('message_id');
+    const msg = await interaction.channel.messages.fetch(msgId).catch(() => null);
+    if (!msg) return interaction.reply({ content: '❌ Message not found.', ephemeral: true });
+    const reaction = msg.reactions.cache.get('🎉');
+    if (!reaction) return interaction.reply({ content: '❌ No 🎉 reactions found.', ephemeral: true });
+    const users = await reaction.users.fetch();
+    const entries = users.filter(u => !u.bot).map(u => u.id);
+    if (!entries.length) return interaction.reply({ content: '❌ No valid entries.', ephemeral: true });
+    const winner = entries[Math.floor(Math.random() * entries.length)];
+    return interaction.reply(`🎉 New winner: <@${winner}>! Congratulations!`);
+  }
+
+  // POLL
+  if (commandName === 'poll') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const question = interaction.options.getString('question');
+    const rawOptions = interaction.options.getString('options').split('|').map(o => o.trim()).filter(Boolean).slice(0, 10);
+    if (rawOptions.length < 2) return interaction.reply({ content: '❌ Need at least 2 options separated by `|`.', ephemeral: true });
+    const numberEmojis = ['1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+    const desc = rawOptions.map((o, i) => `${numberEmojis[i]} ${o}`).join('\n');
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle(`📊 ${question}`)
+      .setDescription(desc)
+      .setFooter({ text: `Poll by ${interaction.user.tag}` })
+      .setTimestamp();
+    const pollMsg = await interaction.channel.send({ embeds: [embed] });
+    for (let i = 0; i < rawOptions.length; i++) await pollMsg.react(numberEmojis[i]).catch(() => {});
+    polls[pollMsg.id] = { question, options: rawOptions };
+    return interaction.reply({ content: '✅ Poll created!', ephemeral: true });
+  }
+
+  // WORD FILTER
+  if (commandName === 'wordfilter') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const action = interaction.options.getString('action');
+    const word = interaction.options.getString('word')?.toLowerCase();
+    if (action === 'add') {
+      if (!word) return interaction.reply({ content: '❌ Provide a word to add.', ephemeral: true });
+      if (wordFilter.includes(word)) return interaction.reply({ content: `⚠️ \`${word}\` is already in the filter.`, ephemeral: true });
+      wordFilter.push(word);
+      return interaction.reply({ content: `✅ Added \`${word}\` to the word filter. (Total: ${wordFilter.length})`, ephemeral: true });
+    }
+    if (action === 'remove') {
+      if (!word) return interaction.reply({ content: '❌ Provide a word to remove.', ephemeral: true });
+      wordFilter = wordFilter.filter(w => w !== word);
+      return interaction.reply({ content: `✅ Removed \`${word}\` from the word filter.`, ephemeral: true });
+    }
+    if (action === 'list') {
+      return interaction.reply({ content: wordFilter.length ? `🚫 **Blocked words:** ${wordFilter.map(w => `\`${w}\``).join(', ')}` : '✅ Word filter is empty.', ephemeral: true });
+    }
+    if (action === 'clear') {
+      wordFilter = [];
+      return interaction.reply({ content: '✅ Word filter cleared.', ephemeral: true });
+    }
   }
 
   // ANTILINK TOGGLE
