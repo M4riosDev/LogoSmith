@@ -135,12 +135,12 @@ function addXp(userId, amount, guild) {
   if (!levels[userId]) levels[userId] = { xp: 0, level: 0 };
   levels[userId].xp += amount;
   const newLevel = getLevel(levels[userId].xp);
+  // Always sync rank role on every XP gain (handles Noob Dev from level 0)
+  if (guild) {
+    guild.members.fetch(userId).then(member => updateRankRole(member)).catch(() => {});
+  }
   if (newLevel > levels[userId].level) {
     levels[userId].level = newLevel;
-    // Update rank role if guild is provided
-    if (guild) {
-      guild.members.fetch(userId).then(member => updateRankRole(member)).catch(() => {});
-    }
     return newLevel;
   }
   return null;
@@ -675,6 +675,8 @@ client.on(Events.GuildMemberAdd, async member => {
     const role = member.guild.roles.cache.get(CONFIG.AUTO_ROLE_ID);
     if (role) await member.roles.add(role).catch(console.error);
   }
+  // Give Noob Dev rank role on join
+  await updateRankRole(member);
   if (CONFIG.WELCOME_CHANNEL_ID) {
     const channel = member.guild.channels.cache.get(CONFIG.WELCOME_CHANNEL_ID);
     if (channel) {
