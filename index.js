@@ -59,7 +59,7 @@ const CONFIG = {
   VERIFY_ROLE_ID: process.env.VERIFY_ROLE_ID || '1471461739026579588',
   CHALLENGE_CHANNEL_ID: process.env.CHALLENGE_CHANNEL_ID || '1481412176802615438',
   IDEAS_CHANNEL_ID: process.env.IDEAS_CHANNEL_ID || '1481294600349028382',
-  TOP_IDEAS_CHANNEL_ID: process.env.TOP_IDEAS_CHANNEL_ID || '1481294600349028382',
+  TOP_IDEAS_CHANNEL_ID: process.env.TOP_IDEAS_CHANNEL_ID || '',
   IDEAS_VOTES_THRESHOLD: parseInt(process.env.IDEAS_VOTES_THRESHOLD || '5'), // net votes to promote to #top-ideas
 };
 
@@ -1180,35 +1180,6 @@ client.on(Events.InteractionCreate, async interaction => {
       return;
     }
     // IDEA APPROVE/REJECT
-    if (interaction.customId.startsWith('idea_approve_') || interaction.customId.startsWith('idea_reject_')) {
-      if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
-        return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
-
-      const msgId = interaction.customId.replace('idea_approve_', '').replace('idea_reject_', '');
-      const isApprove = interaction.customId.startsWith('idea_approve_');
-      const data = ideasData[msgId];
-
-      // Remove buttons
-      await interaction.message.edit({ components: [] }).catch(() => {});
-
-      const oldEmbed = interaction.message.embeds[0];
-      const statusEmbed = EmbedBuilder.from(oldEmbed)
-        .setColor(isApprove ? 0x57f287 : 0xed4245)
-        .setFooter({ text: isApprove ? `✅ Approved by ${interaction.user.tag}` : `❌ Rejected by ${interaction.user.tag}` });
-      await interaction.message.edit({ embeds: [statusEmbed] }).catch(() => {});
-
-      // Award XP to author if approved
-      if (isApprove && data) {
-        addXp(data.authorId, 50, interaction.guild);
-        const author = await client.users.fetch(data.authorId).catch(() => null);
-        if (author) author.send(`✅ Your idea in **${interaction.guild.name}** was approved! **+50 XP** awarded 🎉`).catch(() => {});
-      } else if (!isApprove && data) {
-        const author = await client.users.fetch(data.authorId).catch(() => null);
-        if (author) author.send(`❌ Your idea in **${interaction.guild.name}** was not approved this time.`).catch(() => {});
-      }
-
-      return interaction.reply({ content: `${isApprove ? '✅ Idea approved' : '❌ Idea rejected'}!`, ephemeral: true });
-    }
 
     if (interaction.customId.startsWith('service_accept_') || interaction.customId.startsWith('service_reject_')) {
       if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
@@ -2155,17 +2126,7 @@ React with 🎉 to enter!
       .setFooter({ text: 'React with ✅ or ❌ to vote!' })
       .setTimestamp();
 
-    const approveRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`idea_approve_MSGID`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`idea_reject_MSGID`).setLabel('❌ Reject').setStyle(ButtonStyle.Danger),
-    );
-
-    const msg = await ideasChannel.send({ embeds: [embed], components: [approveRow] });
-    // Edit with real message ID in button customIds
-    await msg.edit({ components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`idea_approve_${msg.id}`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`idea_reject_${msg.id}`).setLabel('❌ Reject').setStyle(ButtonStyle.Danger),
-    )] });
+    const msg = await ideasChannel.send({ embeds: [embed] });
 
     ideasData[msg.id] = { authorId: interaction.user.id, content: ideaText, upvotes: new Set(), downvotes: new Set(), promoted: false };
 
