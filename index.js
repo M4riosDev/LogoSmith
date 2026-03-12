@@ -9,6 +9,9 @@ const {
   ButtonStyle,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   ChannelType,
   SlashCommandBuilder,
   REST,
@@ -52,9 +55,9 @@ const CONFIG = {
   MIN_ACCOUNT_AGE_DAYS: parseInt(process.env.MIN_ACCOUNT_AGE_DAYS || '7'),
   ANTI_LINK: process.env.ANTI_LINK === 'true',
   ANTI_SPAM: process.env.ANTI_SPAM !== 'true',
-  VERIFY_CHANNEL_ID: process.env.VERIFY_CHANNEL_ID || '1481412482164850771',        // channel with verify button
-  VERIFY_ROLE_ID: process.env.VERIFY_ROLE_ID || '1471461739026579588',              // role given after verify
-  CHALLENGE_CHANNEL_ID: process.env.CHALLENGE_CHANNEL_ID || '1481412176802615438',  // channel for weekly challenges
+  VERIFY_CHANNEL_ID: process.env.VERIFY_CHANNEL_ID || '1481412482164850771',
+  VERIFY_ROLE_ID: process.env.VERIFY_ROLE_ID || '1471461739026579588',
+  CHALLENGE_CHANNEL_ID: process.env.CHALLENGE_CHANNEL_ID || '1481412176802615438',
 };
 
 const REACTION_ROLES = {
@@ -72,6 +75,7 @@ const spamTracker = {};
 const warns = {};
 const games = {};
 const pendingRequests = {}; // { userId: messageId } — tracks pending service requests
+const captchaCodes = {};   // { userId: { code, expires } }
 let statsMessageId = null;
 
 // Giveaway, Poll, Daily, Word filter, Voice XP
@@ -80,7 +84,40 @@ const polls = {};           // { messageId: { question, options, votes: {userId:
 const dailyCooldowns = {};  // { userId: timestamp }
 const voiceJoinTime = {};   // { userId: timestamp } for voice XP
 let wordFilter = [];        // array of blocked words
-let currentChallenge = null; // { title, description, difficulty, postedAt, messageId }
+let currentChallenge = null;
+let challengePanelChannelId = null; // set by /challengepanel
+let challengePanelMessageId = null;
+
+// Built-in challenge pool
+const CHALLENGE_POOL = [
+  // Easy
+  { title: 'FizzBuzz', description: 'Write a program that prints numbers 1–100. For multiples of 3 print "Fizz", for multiples of 5 print "Buzz", for both print "FizzBuzz".', difficulty: 'easy' },
+  { title: 'Palindrome Check', description: 'Write a function that returns `true` if a given string is a palindrome (reads the same forwards and backwards), ignoring spaces and case.', difficulty: 'easy' },
+  { title: 'Reverse a String', description: 'Write a function that reverses a string without using built-in reverse methods.', difficulty: 'easy' },
+  { title: 'Sum of Array', description: 'Write a function that takes an array of numbers and returns their sum without using built-in sum/reduce methods.', difficulty: 'easy' },
+  { title: 'Count Vowels', description: 'Write a function that counts the number of vowels (a, e, i, o, u) in a given string.', difficulty: 'easy' },
+  { title: 'Find Max', description: 'Find the maximum value in an array without using built-in max functions.', difficulty: 'easy' },
+  { title: 'Celsius to Fahrenheit', description: 'Write a function that converts a temperature from Celsius to Fahrenheit and back.', difficulty: 'easy' },
+  // Medium
+  { title: 'Two Sum', description: 'Given an array of integers and a target sum, return the indices of the two numbers that add up to the target. Each input has exactly one solution.', difficulty: 'medium' },
+  { title: 'Valid Parentheses', description: 'Given a string with `(`, `)`, `{`, `}`, `[`, `]`, determine if the input string is valid (brackets close in the correct order).', difficulty: 'medium' },
+  { title: 'Fibonacci Sequence', description: 'Write a function that returns the nth Fibonacci number. Implement both a recursive and an iterative solution and compare their performance.', difficulty: 'medium' },
+  { title: 'Anagram Check', description: 'Write a function that checks if two strings are anagrams of each other (contain the same characters, different order).', difficulty: 'medium' },
+  { title: 'Flatten Nested Array', description: 'Write a function that flattens a deeply nested array into a single array without using built-in flat() methods.', difficulty: 'medium' },
+  { title: 'Caesar Cipher', description: 'Implement a Caesar cipher encoder/decoder. Shift each letter by a given number of positions in the alphabet.', difficulty: 'medium' },
+  { title: 'Binary Search', description: 'Implement binary search on a sorted array. Return the index of the target element, or -1 if not found.', difficulty: 'medium' },
+  { title: 'Remove Duplicates', description: 'Remove duplicate values from an array without using Set or filter+indexOf. Return a new array with unique values only.', difficulty: 'medium' },
+  // Hard
+  { title: 'LRU Cache', description: 'Design and implement an LRU (Least Recently Used) cache with `get(key)` and `put(key, value)` operations, both in O(1) time.', difficulty: 'hard' },
+  { title: 'Merge Sort', description: 'Implement merge sort from scratch. Explain the time and space complexity of your solution.', difficulty: 'hard' },
+  { title: 'Balanced Binary Tree', description: 'Write a function to determine if a binary tree is height-balanced (depth of subtrees never differs by more than 1).', difficulty: 'hard' },
+  { title: 'Longest Substring Without Repeating', description: 'Given a string, find the length of the longest substring without repeating characters. Aim for O(n) time complexity.', difficulty: 'hard' },
+  { title: 'Word Ladder', description: 'Given two words and a dictionary, find the shortest transformation sequence from the first word to the last, changing one letter at a time.', difficulty: 'hard' },
+  // Expert
+  { title: 'Implement a Promise', description: 'Implement your own version of JavaScript Promises from scratch, supporting `.then()`, `.catch()`, and `.finally()`.', difficulty: 'expert' },
+  { title: 'Regex Engine', description: 'Build a simplified regex engine that supports `.` (any char) and `*` (zero or more of previous char).', difficulty: 'expert' },
+  { title: 'Trie Data Structure', description: 'Implement a Trie data structure with insert, search, and startsWith methods. Then use it to implement autocomplete.', difficulty: 'expert' },
+];
 
 const GAME_XP = {
   trivia_correct: 25,
@@ -311,6 +348,64 @@ const LANGUAGE_ROLES = [
   { id: 'assembly',    label: 'Assembly',        emoji: '🔬', roleId: '', description: 'Low-level language that maps closely to machine code', category: 'Other' },
 ];
 
+
+// ========== AUTO CHALLENGE HELPER ==========
+async function postAutoChallenge(guild) {
+  if (!challengePanelChannelId) return;
+  const channel = guild.channels.cache.get(challengePanelChannelId);
+  if (!channel) return;
+
+  const difficultyMap = {
+    easy:   { label: '🟢 Easy',   color: 0x57f287, xp: 50 },
+    medium: { label: '🟡 Medium', color: 0xfee75c, xp: 100 },
+    hard:   { label: '🔴 Hard',   color: 0xed4245, xp: 200 },
+    expert: { label: '⚫ Expert', color: 0x2f3136, xp: 350 },
+  };
+
+  // Pick a random challenge from pool
+  const pick = CHALLENGE_POOL[Math.floor(Math.random() * CHALLENGE_POOL.length)];
+  const diff = difficultyMap[pick.difficulty];
+
+  const embed = new EmbedBuilder()
+    .setColor(diff.color)
+    .setTitle(`💻 Weekly Code Challenge — ${pick.title}`)
+    .setDescription(pick.description)
+    .addFields(
+      { name: '⚡ Difficulty', value: diff.label, inline: true },
+      { name: '🏆 XP Reward', value: `+${diff.xp} XP for submitting`, inline: true },
+      { name: '📤 How to submit', value: 'Use `/submit` with your solution!', inline: false }
+    )
+    .setFooter({ text: 'New challenge every week • Good luck!' })
+    .setTimestamp();
+
+  // Edit existing panel message if possible, else send new
+  if (challengePanelMessageId) {
+    const old = await channel.messages.fetch(challengePanelMessageId).catch(() => null);
+    if (old) {
+      await old.edit({ embeds: [embed] });
+    } else {
+      const msg = await channel.send({ embeds: [embed] });
+      challengePanelMessageId = msg.id;
+    }
+  } else {
+    const msg = await channel.send({ embeds: [embed] });
+    challengePanelMessageId = msg.id;
+  }
+
+  currentChallenge = {
+    title: pick.title,
+    description: pick.description,
+    difficulty: pick.difficulty,
+    xp: diff.xp,
+    postedAt: Date.now(),
+    messageId: challengePanelMessageId,
+    channelId: challengePanelChannelId,
+    submissions: new Set(),
+  };
+
+  console.log(`✅ Auto challenge posted: ${pick.title}`);
+}
+
 // ========== SLASH COMMANDS ==========
 const commands = [
   new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
@@ -412,6 +507,8 @@ const commands = [
 
   new SlashCommandBuilder().setName('verifypanel').setDescription('Send the verification panel (Admin only)'),
 
+  new SlashCommandBuilder().setName('challengepanel').setDescription('Set this channel as the auto challenge channel (Admin only)'),
+
   new SlashCommandBuilder().setName('challenge').setDescription('Post a new code challenge (Admin only)')
     .addStringOption(o => o.setName('title').setDescription('Challenge title').setRequired(true))
     .addStringOption(o => o.setName('description').setDescription('Challenge description / task').setRequired(true))
@@ -452,6 +549,12 @@ client.once(Events.ClientReady, async () => {
     await updateStatsMessage();
     await updateVoiceStats(guild);
   }
+  // Weekly challenge auto-post (every 7 days)
+  setInterval(async () => {
+    const g = client.guilds.cache.get(GUILD_ID);
+    if (g) await postAutoChallenge(g);
+  }, 7 * 24 * 60 * 60 * 1000);
+
   // Auto-refresh every 5 minutes
   setInterval(async () => {
     const g = client.guilds.cache.get(GUILD_ID);
@@ -649,19 +752,19 @@ client.on(Events.MessageCreate, async message => {
       .setFooter({ text: `User ID: ${message.author.id}` })
       .setTimestamp();
 
+    // Grab image attachments if any
+    const imageAttachments = [...message.attachments.values()].filter(a => a.contentType?.startsWith('image/')).map(a => a.url);
+
+    // Set image on embed if present
+    if (imageAttachments.length > 0) embed.setImage(imageAttachments[0]);
+    if (imageAttachments.length > 1) embed.addFields({ name: '📎 Additional images', value: imageAttachments.slice(1).join('\n') });
+
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`service_accept_${message.author.id}`).setLabel('✅ Accept').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`service_reject_${message.author.id}`).setLabel('❌ Reject').setStyle(ButtonStyle.Danger),
     );
 
-    // If there's an image, set it on the embed and/or send separately
-    if (imageAttachments.length > 0) embed.setImage(imageAttachments[0]);
-    if (imageAttachments.length > 1) embed.addFields({ name: '📎 Additional images', value: imageAttachments.slice(1).join('\n') });
-
     const reviewMsg = await reviewChannel.send({ embeds: [embed], components: [row] });
-    // Grab image attachments if any
-    const imageAttachments = message.attachments.filter(a => a.contentType?.startsWith('image/')).map(a => a.url);
-
     pendingRequests[message.author.id] = { msgId: reviewMsg.id, content: message.content, images: imageAttachments };
 
     const notify = await message.channel.send(`📬 ${message.author} Your request has been submitted! An admin will review it shortly.`);
@@ -730,6 +833,34 @@ async function openTicket(interaction) {
 // ========== INTERACTIONS ==========
 client.on(Events.InteractionCreate, async interaction => {
 
+  // CAPTCHA MODAL SUBMIT
+  if (interaction.isModalSubmit() && interaction.customId === 'verify_captcha') {
+    const roleId = CONFIG.VERIFY_ROLE_ID;
+    const stored = captchaCodes[interaction.user.id];
+
+    if (!stored) return interaction.reply({ content: '❌ Captcha expired. Please press the Verify button again.', ephemeral: true });
+    if (Date.now() > stored.expires) {
+      delete captchaCodes[interaction.user.id];
+      return interaction.reply({ content: '⏰ Captcha expired. Please press the Verify button again.', ephemeral: true });
+    }
+
+    const userAnswer = interaction.fields.getTextInputValue('captcha_answer').trim();
+
+    if (userAnswer !== stored.answer) {
+      delete captchaCodes[interaction.user.id];
+      return interaction.reply({ content: `❌ Wrong answer! Please press the Verify button again to get a new captcha.`, ephemeral: true });
+    }
+
+    delete captchaCodes[interaction.user.id];
+
+    if (!roleId) return interaction.reply({ content: '❌ Verify role not configured.', ephemeral: true });
+    const role = interaction.guild.roles.cache.get(roleId);
+    if (!role) return interaction.reply({ content: '❌ Verify role not found.', ephemeral: true });
+
+    await interaction.member.roles.add(role).catch(console.error);
+    return interaction.reply({ content: '✅ Correct! You have been **verified** and gained access to the server 🎉', ephemeral: true });
+  }
+
   // SELECT MENUS
   if (interaction.isStringSelectMenu()) {
     if (interaction.customId.startsWith('lang_select_')) {
@@ -771,13 +902,44 @@ client.on(Events.InteractionCreate, async interaction => {
   if (interaction.isButton()) {
     if (interaction.customId === 'verify_member') {
       const roleId = CONFIG.VERIFY_ROLE_ID;
-      if (!roleId) return interaction.reply({ content: '❌ Verify role not configured. Ask an admin to set `VERIFY_ROLE_ID`.', ephemeral: true });
+      if (!roleId) return interaction.reply({ content: '❌ Verify role not configured.', ephemeral: true });
       const role = interaction.guild.roles.cache.get(roleId);
       if (!role) return interaction.reply({ content: '❌ Verify role not found.', ephemeral: true });
       if (interaction.member.roles.cache.has(roleId))
         return interaction.reply({ content: '✅ You are already verified!', ephemeral: true });
-      await interaction.member.roles.add(role).catch(console.error);
-      return interaction.reply({ content: '✅ You have been **verified**! Welcome to the server 🎉', ephemeral: true });
+
+      // Generate a simple math captcha e.g. "12 + 7"
+      const a = Math.floor(Math.random() * 20) + 1;
+      const b = Math.floor(Math.random() * 20) + 1;
+      const ops = [
+        { symbol: '+', answer: a + b },
+        { symbol: '-', answer: a - b },
+        { symbol: 'x', answer: a * b },
+      ];
+      const op = ops[Math.floor(Math.random() * ops.length)];
+      const question = `${a} ${op.symbol} ${b}`;
+
+      // Store with 5 minute expiry
+      captchaCodes[interaction.user.id] = {
+        answer: op.answer.toString(),
+        expires: Date.now() + 5 * 60 * 1000,
+      };
+
+      const modal = new ModalBuilder()
+        .setCustomId('verify_captcha')
+        .setTitle('🤖 Human Verification');
+
+      const input = new TextInputBuilder()
+        .setCustomId('captcha_answer')
+        .setLabel(`Solve this: ${question} = ?`)
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Enter your answer...')
+        .setMinLength(1)
+        .setMaxLength(10)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      return interaction.showModal(modal);
     }
 
     if (interaction.customId === 'open_ticket') return openTicket(interaction);
@@ -1467,6 +1629,19 @@ React with 🎉 to enter!
 
     await interaction.channel.send({ embeds: [embed], components: [row] });
     return interaction.reply({ content: '✅ Verification panel sent!', ephemeral: true });
+  }
+
+  // CHALLENGEPANEL
+  if (commandName === 'challengepanel') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+
+    challengePanelChannelId = interaction.channel.id;
+    challengePanelMessageId = null; // reset so it posts fresh
+
+    await postAutoChallenge(interaction.guild);
+
+    return interaction.reply({ content: `✅ Challenge panel set in ${interaction.channel}! A new challenge will be posted automatically every **week**.`, ephemeral: true });
   }
 
   // CHALLENGE (Admin posts a new challenge)
