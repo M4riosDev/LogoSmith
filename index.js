@@ -1528,7 +1528,6 @@ client.on(Events.InteractionCreate, async interaction => {
       .setAuthor({ name: '🎫 Support Center', iconURL: botAvatar })
       .setThumbnail(botAvatar)
       .setDescription('Need assistance? Select a category below to open a **private ticket**. Our team typically responds within a few hours.\n\n> 🐛 **Bug Report** — Technical issues\n> 🚨 **Report Scammer** — Fraud or scam reports\n> ❓ **Other** — Anything else')
-      .setFooter({ text: interaction.guild.name + ' • Support', iconURL: interaction.guild.iconURL({ dynamic: true }) })
       .setTimestamp();
 
     const menu = new StringSelectMenuBuilder()
