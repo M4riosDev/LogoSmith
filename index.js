@@ -1514,14 +1514,19 @@ client.on(Events.InteractionCreate, async interaction => {
   // TICKET
   if (commandName === 'ticket') return openTicket(interaction, 'other');
 
-  // TICKET PANEL
+// TICKET PANEL
   if (commandName === 'ticketpanel') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
       return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
- const embed = new EmbedBuilder()
+
+    await interaction.deferReply({ ephemeral: true });
+
+    const botAvatar = client.user.displayAvatarURL({ size: 512 });
+
+    const embed = new EmbedBuilder()
       .setColor(0xFFFFFF)
-      .setAuthor({ name: '🎫 Support Center', iconURL: getLogoUrl() })
-      .setThumbnail(getLogoUrl())
+      .setAuthor({ name: '🎫 Support Center', iconURL: botAvatar })
+      .setThumbnail(botAvatar)
       .setDescription('Need assistance? Select a category below to open a **private ticket**. Our team typically responds within a few hours.\n\n> 🐛 **Bug Report** — Technical issues\n> 🚨 **Report Scammer** — Fraud or scam reports\n> ❓ **Other** — Anything else')
       .setFooter({ text: interaction.guild.name + ' • Support', iconURL: interaction.guild.iconURL({ dynamic: true }) })
       .setTimestamp();
@@ -1537,7 +1542,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
     const row = new ActionRowBuilder().addComponents(menu);
     await interaction.channel.send({ embeds: [embed], components: [row] });
-    return interaction.reply({ content: '✅ Ticket panel sent!', ephemeral: true });
+    return interaction.editReply({ content: '✅ Ticket panel sent!' });
   }
 
   // REACTION ROLES
